@@ -31,10 +31,13 @@ Usage - formats:
 import argparse
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
 import torch
+
+import numpy as np
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -79,6 +82,7 @@ def run(
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride
+        push_rtsp=''
 ):
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
@@ -203,6 +207,18 @@ def run(
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
+            if push_rtsp:
+                if dataset.mode == 'image':
+                    pass
+                else:  # 'video' or 'stream'
+                    if vid_path[i] != save_path:  # new video
+                        vid_path[i] = save_path
+                        print (vid_path[i], save_path)
+                        ffmpeg_process = open_ffmpeg_stream_process(push_rtsp)
+
+                    ffmpeg_process.stdin.write(im0.astype(np.uint8).tobytes())
+
+
         # Print time (inference-only)
         LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
 
@@ -215,6 +231,16 @@ def run(
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
 
+def open_ffmpeg_stream_process(rtsp_server):
+    args = (
+        "ffmpeg -re -stream_loop -1 -f rawvideo "
+        "-pix_fmt bgr24 -s 1280x720 -i pipe:0 -pix_fmt yuv420p -c:v libx264 "
+        "-f rtsp rtsp://"+rtsp_server+":8554/stream"
+    ).split()
+
+    print (args)
+
+    return subprocess.Popen(args, stdin=subprocess.PIPE)
 
 def parse_opt():
     parser = argparse.ArgumentParser()
@@ -245,6 +271,7 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
+    parser.add_argument('--push-rtsp', type=str, default='', help='push inference result to RTSP server')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(vars(opt))
