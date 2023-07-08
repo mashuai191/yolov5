@@ -52,6 +52,8 @@ from utils.general import (LOGGER, Profile, check_file, check_img_size, check_im
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
 
+# on Windows, add following env variable for RTP
+#os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'protocol_whitelist;file,rtp,udp,tcp'
 
 @smart_inference_mode()
 def run(
@@ -82,8 +84,9 @@ def run(
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride
-        push_rtsp=''
+        push_rtp='', # e.g. 192.168.2.1:6666
 ):
+    ffmpeg_process_opened = False
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
@@ -171,7 +174,7 @@ def run(
                         with open(f'{txt_path}.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
-                    if save_img or save_crop or view_img:  # Add bbox to image
+                    if save_img or save_crop or view_img or push_rtp:  # Add bbox to image
                         c = int(cls)  # integer class
                         label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
                         annotator.box_label(xyxy, label, color=colors(c, True))
@@ -207,15 +210,15 @@ def run(
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
-            if push_rtsp:
+            if push_rtp:
                 if dataset.mode == 'image':
                     pass
                 else:  # 'video' or 'stream'
-                    if vid_path[i] != save_path:  # new video
-                        vid_path[i] = save_path
-                        print (vid_path[i], save_path)
-                        ffmpeg_process = open_ffmpeg_stream_process(push_rtsp)
+                    if not ffmpeg_process_opened:
+                        ffmpeg_process = open_ffmpeg_stream_process(push_rtp)
+                        ffmpeg_process_opened = True
 
+                    #ffmpeg_process.stdin.write(im0.astype(np.uint8).tobytes())
                     ffmpeg_process.stdin.write(im0.astype(np.uint8).tobytes())
 
 
@@ -231,11 +234,17 @@ def run(
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
 
-def open_ffmpeg_stream_process(rtsp_server):
+def open_ffmpeg_stream_process(rtp_target):
+    # args = (
+    #     "ffmpeg -re -stream_loop -1 -f rawvideo "
+    #     "-pix_fmt bgr24 -s 1280x720 -i pipe:0 -pix_fmt yuv420p -c:v libx264 "
+    #     "-movflags +faststart -f rtsp rtsp://"+rtsp_server+":8554/stream"
+    # ).split()
+
     args = (
         "ffmpeg -re -stream_loop -1 -f rawvideo "
         "-pix_fmt bgr24 -s 1280x720 -i pipe:0 -pix_fmt yuv420p -c:v libx264 "
-        "-f rtsp rtsp://"+rtsp_server+":8554/stream"
+        "-f rtp -sdp_file video.sdp rtp://"+rtp_target
     ).split()
 
     print (args)
@@ -271,7 +280,7 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
-    parser.add_argument('--push-rtsp', type=str, default='', help='push inference result to RTSP server')
+    parser.add_argument('--push-rtp', type=str, default='', help='push inference result to RTSP server')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(vars(opt))
